@@ -5,7 +5,9 @@ use App\Http\Controllers\WeatherController;
 use Illuminate\Support\Facades\Route;
 
 // Main page
-Route::get('/', [FavoriteController::class, 'index']);
+Route::get('/', function () {
+    return view('weather.index');
+});
 
 // Favorites CRUD
 Route::get('/favorites',         [FavoriteController::class, 'index']);

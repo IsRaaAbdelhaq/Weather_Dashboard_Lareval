@@ -21,15 +21,6 @@
 
 <div class="app-layout">
 
-    {{-- Sidebar — desktop only --}}
-    <aside class="sidebar">
-        <div class="logo">&#127786;</div>
-        <div class="nav-icon active" id="nav-dashboard">⊞</div>
-        <div class="nav-icon" id="nav-search">&#128269;</div>
-        <div class="nav-icon" id="nav-favorites">&#10084;</div>
-        <div class="nav-icon" id="nav-settings">&#9881;</div>
-    </aside>
-
     <div class="main-content">
 
         {{-- Header included from partials/header.blade.php --}}
