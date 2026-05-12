@@ -7,25 +7,19 @@ use Illuminate\Http\Request;
 
 class FavoriteController extends Controller
 {
-    public function index(Request $request)
+    public function index()
     {
-        $favorites = Favorite::all();
-
-        if ($request->ajax() || $request->wantsJson()) {
-            return response()->json([
-                'status' => 'success',
-                'data' => $favorites
-            ]);
-        }
-
-        return view('weather.index');
+        return response()->json([
+            'status' => 'success',
+            'data' => Favorite::all()
+        ]);
     }
 
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'city_name' => 'required|string|max:100|regex:/^[a-zA-Z\s]+$/',
-            'country_code' => 'nullable|regex:/^[A-Z]{2}$/',
+            'city_name' => 'required|string|max:100',
+            'country_code' => 'nullable|string|max:2',
             'notes' => 'nullable|string|max:255',
         ]);
 
@@ -33,21 +27,22 @@ class FavoriteController extends Controller
 
         return response()->json([
             'status' => 'success',
+            'message' => 'Added to favorites',
             'data' => $favorite
         ]);
     }
 
     public function update(Request $request, $id)
     {
-        $validated = $request->validate([
-            'notes' => 'nullable|string|max:255'
-        ]);
-
         $favorite = Favorite::findOrFail($id);
-        $favorite->update($validated);
+
+        $favorite->update([
+            'notes' => $request->notes
+        ]);
 
         return response()->json([
             'status' => 'success',
+            'message' => 'Updated successfully',
             'data' => $favorite
         ]);
     }
@@ -58,7 +53,8 @@ class FavoriteController extends Controller
         $favorite->delete();
 
         return response()->json([
-            'status' => 'success'
+            'status' => 'success',
+            'message' => 'Deleted successfully'
         ]);
     }
 }

@@ -6,56 +6,73 @@ use Illuminate\Http\Request;
 
 class WeatherController extends Controller
 {
-    /**
-     * Get weather data for a city
-     * 
-     * @param Request $request
-     * @return \Illuminate\Http\JsonResponse
-     */
     public function getWeather(Request $request)
     {
-        // Validate input
         $validated = $request->validate([
             'city' => 'required|string|max:100',
         ]);
 
         $city = $validated['city'];
-        $apiKey = env('WEATHER_API_KEY');
 
-        // Check if API key is configured
-        if (!$apiKey) {
+        $openWeatherKey = env('OPENWEATHER_API_KEY');
+        $weatherApiKey  = env('WEATHERAPI_KEY');
+
+        if (!$openWeatherKey || !$weatherApiKey) {
             return response()->json([
-                'error' => 'Weather API key is not configured'
+                'error' => 'API keys are not configured properly'
             ], 500);
         }
 
         try {
-            // Get current weather
-            $currentWeather = $this->fetchCurrentWeather($city, $apiKey);
-            if (!$currentWeather) {
+            $current = $this->fetchCurrentWeather($city, $openWeatherKey);
+
+            if (!$current || !isset($current['main'])) {
                 return response()->json([
                     'error' => 'City not found'
                 ], 404);
             }
 
-            // Get forecast
-            $forecast = $this->fetchForecast($city, $apiKey);
+            $url = "http://api.weatherapi.com/v1/forecast.json?key={$weatherApiKey}&q=" . urlencode($city) . "&days=5";
 
-            // Build response
-            $response = [
-                'location_name' => $currentWeather['name'] ?? null,
-                'country' => $currentWeather['sys']['country'] ?? null,
-                'temp_c' => $currentWeather['main']['temp'] ?? null,
-                'condition_text' => $currentWeather['weather'][0]['main'] ?? null,
-                'icon' => $currentWeather['weather'][0]['icon'] ?? null,
-                'humidity' => $currentWeather['main']['humidity'] ?? null,
-                'wind_kph' => ($currentWeather['wind']['speed'] ?? 0) * 3.6, // Convert m/s to km/h
-                'cloud' => $currentWeather['clouds']['all'] ?? null,
-                'pressure_mb' => $currentWeather['main']['pressure'] ?? null,
-                'forecast' => $forecast,
-            ];
+            $response = file_get_contents($url);
+            $weatherData = json_decode($response, true);
 
-            return response()->json($response);
+            if (!$weatherData || isset($weatherData['error'])) {
+                return response()->json([
+                    'error' => 'Failed to fetch forecast data'
+                ], 500);
+            }
+
+            $forecastDays = [];
+
+            foreach ($weatherData['forecast']['forecastday'] as $day) {
+                $forecastDays[] = [
+                    'date' => $day['date'],
+                    'avgtemp_c' => $day['day']['avgtemp_c'],
+                    'max_temp_c' => $day['day']['maxtemp_c'],
+                    'min_temp_c' => $day['day']['mintemp_c'],
+                    'condition' => $day['day']['condition']['text'],
+                    'icon' => $day['day']['condition']['icon'],
+                ];
+            }
+
+            return response()->json([
+                'location_name' => $current['name'] ?? null,
+                'country' => $current['sys']['country'] ?? null,
+
+                // OpenWeather (numeric data)
+                'temp_c' => $current['main']['temp'] ?? null,
+                'humidity' => $current['main']['humidity'] ?? null,
+                'wind_kph' => ($current['wind']['speed'] ?? 0) * 3.6,
+                'cloud' => $current['clouds']['all'] ?? null,
+                'pressure_mb' => $current['main']['pressure'] ?? null,
+
+                // WeatherAPI (visual + forecast)
+                'condition_text' => $weatherData['current']['condition']['text'] ?? null,
+                'icon' => $weatherData['current']['condition']['icon'] ?? null,
+                'forecast' => $forecastDays,
+            ]);
+
         } catch (\Exception $e) {
             return response()->json([
                 'error' => 'Failed to fetch weather data',
@@ -64,88 +81,18 @@ class WeatherController extends Controller
         }
     }
 
-    /**
-     * Fetch current weather from OpenWeatherMap API
-     */
     private function fetchCurrentWeather($city, $apiKey)
     {
-        $url = "https://api.openweathermap.org/data/2.5/weather";
+        $url = "https://api.openweathermap.org/data/2.5/weather?q="
+            . urlencode($city)
+            . "&appid="
+            . $apiKey
+            . "&units=metric";
 
-        $curl = curl_init();
-        curl_setopt_array($curl, [
-            CURLOPT_URL => $url . "?q=" . urlencode($city) . "&appid=" . urlencode($apiKey) . "&units=metric",
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 10,
-            CURLOPT_FOLLOWLOCATION => true,
-        ]);
+        $response = @file_get_contents($url);
 
-        $response = curl_exec($curl);
-        $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-        curl_close($curl);
-
-        if ($httpCode !== 200) {
-            return null;
-        }
+        if (!$response) return null;
 
         return json_decode($response, true);
-    }
-
-    /**
-     * Fetch 5-day forecast from OpenWeatherMap API
-     */
-    private function fetchForecast($city, $apiKey)
-    {
-        $url = "https://api.openweathermap.org/data/2.5/forecast";
-
-        $curl = curl_init();
-        curl_setopt_array($curl, [
-            CURLOPT_URL => $url . "?q=" . urlencode($city) . "&appid=" . urlencode($apiKey) . "&units=metric",
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 10,
-            CURLOPT_FOLLOWLOCATION => true,
-        ]);
-
-        $response = curl_exec($curl);
-        $httpCode = curl_getinfo($curl, CURLINFO_HTTP_CODE);
-        curl_close($curl);
-
-        if ($httpCode !== 200) {
-            return [];
-        }
-
-        $data = json_decode($response, true);
-
-        // Extract forecast days (5 day forecast - one entry every 3 hours, so 8 per day)
-        $forecastDays = [];
-        $dailyForecasts = [];
-
-        if (isset($data['list'])) {
-            foreach ($data['list'] as $forecast) {
-                $date = substr($forecast['dt_txt'], 0, 10);
-
-                if (!isset($dailyForecasts[$date])) {
-                    $dailyForecasts[$date] = [
-                        'temps' => [],
-                        'condition' => $forecast['weather'][0]['main'] ?? null,
-                        'icon' => $forecast['weather'][0]['icon'] ?? null,
-                    ];
-                }
-
-                $dailyForecasts[$date]['temps'][] = $forecast['main']['temp'];
-            }
-
-            foreach ($dailyForecasts as $date => $forecast) {
-                $forecastDays[] = [
-                    'date' => $date,
-                    'max_temp_c' => max($forecast['temps']),
-                    'min_temp_c' => min($forecast['temps']),
-                    'avg_temp_c' => array_sum($forecast['temps']) / count($forecast['temps']),
-                    'condition' => $forecast['condition'],
-                    'icon' => $forecast['icon'],
-                ];
-            }
-        }
-
-        return $forecastDays;
     }
 }
