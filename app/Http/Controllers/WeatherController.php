@@ -12,7 +12,7 @@ class WeatherController extends Controller
             'city' => 'required|string|max:100',
         ]);
 
-        $city = $validated['city'];
+        $city = trim($validated['city']);
 
         $openWeatherKey = env('OPENWEATHER_API_KEY');
         $weatherApiKey  = env('WEATHERAPI_KEY');
@@ -24,75 +24,104 @@ class WeatherController extends Controller
         }
 
         try {
-            $current = $this->fetchCurrentWeather($city, $openWeatherKey);
+            // ── 1. OpenWeatherMap — current weather
+            $current = $this->fetchWithCurl(
+                "https://api.openweathermap.org/data/2.5/weather?q="
+                . urlencode($city) . "&appid={$openWeatherKey}&units=metric"
+            );
 
-            if (!$current || !isset($current['main'])) {
+            if (!$current || !isset($current['name'])) {
                 return response()->json([
-                    'error' => 'City not found'
+                    'error' => 'City not found. Please try again.'
                 ], 404);
             }
 
-            $url = "http://api.weatherapi.com/v1/forecast.json?key={$weatherApiKey}&q=" . urlencode($city) . "&days=5";
+            // ── 2. OpenWeatherMap — 5 day forecast (every 3 hours) 
+            $forecastData = $this->fetchWithCurl(
+                "https://api.openweathermap.org/data/2.5/forecast?q="
+                . urlencode($city) . "&appid={$openWeatherKey}&units=metric"
+            );
 
-            $response = file_get_contents($url);
-            $weatherData = json_decode($response, true);
+            // ── 3. WeatherAPI — current icon 
+            $weatherApiCurrent = $this->fetchWithCurl(
+                "https://api.weatherapi.com/v1/current.json?key={$weatherApiKey}&q="
+                . urlencode($city)
+            );
 
-            if (!$weatherData || isset($weatherData['error'])) {
-                return response()->json([
-                    'error' => 'Failed to fetch forecast data'
-                ], 500);
+            $currentIcon = $weatherApiCurrent['current']['condition']['icon']
+                ?? '//cdn.weatherapi.com/weather/64x64/day/113.png';
+
+            // ── 4. WeatherAPI — forecast icons (3 days max on free plan) 
+            $weatherApiForecast = $this->fetchWithCurl(
+                "https://api.weatherapi.com/v1/forecast.json?key={$weatherApiKey}&q="
+                . urlencode($city) . "&days=3"
+            );
+
+            $forecastIcons = [];
+            foreach ($weatherApiForecast['forecast']['forecastday'] ?? [] as $day) {
+                $forecastIcons[$day['date']] = $day['day']['condition']['icon'];
             }
 
+            // ── 5. Build daily forecast from OpenWeatherMap 3-hour data 
+            $daily = [];
+            foreach ($forecastData['list'] ?? [] as $item) {
+                $date = explode(' ', $item['dt_txt'])[0];
+                if (!isset($daily[$date])) {
+                    $daily[$date] = ['temps' => []];
+                }
+                $daily[$date]['temps'][] = $item['main']['temp'];
+            }
+
+            // ── 6. Filter days with enough readings + build array
             $forecastDays = [];
-
-            foreach ($weatherData['forecast']['forecastday'] as $day) {
-                $forecastDays[] = [
-                    'date' => $day['date'],
-                    'avgtemp_c' => $day['day']['avgtemp_c'],
-                    'max_temp_c' => $day['day']['maxtemp_c'],
-                    'min_temp_c' => $day['day']['mintemp_c'],
-                    'condition' => $day['day']['condition']['text'],
-                    'icon' => $day['day']['condition']['icon'],
-                ];
+            foreach ($daily as $date => $data) {
+                if (count($data['temps']) >= 4) {
+                    $forecastDays[] = [
+                        'date'      => $date,
+                        'avgtemp_c' => round(
+                            array_sum($data['temps']) / count($data['temps']), 2
+                        ),
+                        'icon'      => $forecastIcons[$date]
+                            ?? '//cdn.weatherapi.com/weather/64x64/day/113.png'
+                    ];
+                }
             }
 
+            $forecastDays = array_slice($forecastDays, 0, 5);
+
+            // ── 7. Return clean response 
             return response()->json([
-                'location_name' => $current['name'] ?? null,
-                'country' => $current['sys']['country'] ?? null,
-
-                // OpenWeather (numeric data)
-                'temp_c' => $current['main']['temp'] ?? null,
-                'humidity' => $current['main']['humidity'] ?? null,
-                'wind_kph' => ($current['wind']['speed'] ?? 0) * 3.6,
-                'cloud' => $current['clouds']['all'] ?? null,
-                'pressure_mb' => $current['main']['pressure'] ?? null,
-
-                // WeatherAPI (visual + forecast)
-                'condition_text' => $weatherData['current']['condition']['text'] ?? null,
-                'icon' => $weatherData['current']['condition']['icon'] ?? null,
-                'forecast' => $forecastDays,
+                'location_name'  => $current['name'],
+                'country'        => $current['sys']['country'],
+                'temp_c'         => number_format($current['main']['temp'], 2, '.', ''),
+                'condition_text' => $current['weather'][0]['description'],
+                'icon'           => $currentIcon,
+                'humidity'       => $current['main']['humidity'],
+                'wind_kph'       => round($current['wind']['speed'] * 3.6, 1),
+                'cloud'          => $current['clouds']['all'],
+                'pressure_mb'    => $current['main']['pressure'],
+                'forecast'       => $forecastDays,
             ]);
 
         } catch (\Exception $e) {
             return response()->json([
-                'error' => 'Failed to fetch weather data',
+                'error'   => 'Failed to fetch weather data',
                 'message' => $e->getMessage()
             ], 500);
         }
     }
 
-    private function fetchCurrentWeather($city, $apiKey)
+    // ── Reusable CURL helper 
+    private function fetchWithCurl(string $url): ?array
     {
-        $url = "https://api.openweathermap.org/data/2.5/weather?q="
-            . urlencode($city)
-            . "&appid="
-            . $apiKey
-            . "&units=metric";
+        $ch = curl_init($url);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 10);
+        $raw = curl_exec($ch);
+        curl_close($ch);
 
-        $response = @file_get_contents($url);
+        if (!$raw) return null;
 
-        if (!$response) return null;
-
-        return json_decode($response, true);
+        return json_decode($raw, true);
     }
 }
