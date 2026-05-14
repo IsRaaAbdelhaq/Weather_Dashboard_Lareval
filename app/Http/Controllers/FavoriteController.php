@@ -18,7 +18,7 @@ class FavoriteController extends Controller
     public function store(Request $request)
     {
         $validated = $request->validate([
-            'city_name' => 'required|string|max:100',
+            'city_name' => ['required', 'string', 'max:100', 'not_regex:/[0-9]/'],
             'country_code' => 'nullable|string|max:2',
             'notes' => 'nullable|string|max:255',
         ]);
@@ -31,7 +31,7 @@ class FavoriteController extends Controller
             'data' => $favorite
         ]);
     }
-
+    
     public function update(Request $request, $id)
     {
         $favorite = Favorite::findOrFail($id);
